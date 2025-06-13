@@ -106,6 +106,8 @@ uv pip install torch
 uv pip install vllm
 uv pip install streamlit
 uv pip install sacrebleu
+uv pip install bitsandbytes
+uv pip install accelerate
 ```
 
 念の為、GPUが使えることを以下のコマンドで確認してください。`True`になっていたらGPU環境で実行可能です。
@@ -810,21 +812,346 @@ print(p)
 
 ---
 
-## 1.2 軽量化（quantization）
+## 1.2 メモリを節約する：量子化（quantization）
+
+おさらいします。結局のところLLMに文を生成してもらうには、以下のようなコードを使いました。
+
+```python
+from transformers import pipeline
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+print(output[0]["generated_text"])
+```
+
+今回はモデルの読み込み箇所：
+
+```python
+...
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+...
+```
+
+について、少し説明を加えていきます。めんどくさい人や細かいことを気にしない人は斜め読みして頂いて構いません。
+
+以前`torch_dtype=torch.float16`を指定する理由について、
+
+> 次に、HuggingFace Transformersの`pipeline`を使用して、モデルをロードします。このとき、`torch_dtype=torch.float16`と記述するのは、LLMのサイズが少し大きいため、16bitのfloat型にキャストして読み込むことで、メモリ使用量を約半分にしています。float型が32bitの浮動小数点であることを思い出してください。
+
+と申し上げました。一般的に大きなモデルは性能が良いとされているので、より大きなサイズのLLMを使いたいです。しかし、メモリサイズが小さいGPUを使用している場合、通常なら大きなモデルを扱えません。うっかり、以下のような`OutOfMemoryError`が発生します。モデルがメモリに乗り切らなかったので、発生しました。LLM関連で一番多いエラーです。
+
+```bash
+torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 86.00 MiB. GPU 0 has a total capacty of 31.74 GiB of which 53.12 MiB is free. Including non-PyTorch memory, this process has 31.68 GiB memory in use. Of the allocated memory 30.16 GiB is allocated by PyTorch, and 1.16 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting max_split_size_mb to avoid fragmentation. See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF
+```
+
+また長文生成や大量の文生成など、メモリを消費するため、生成文長に制限がかかったり、そもそも大きいモデルは推論速度が遅かったりと、なにかと不都合が生じます。そのためメモリを節約して、より大きいモデルを速い推論速度で実現したいという欲張りなニーズがあります。これを実現するのが量子化です。
+
+情報科学のおさらいです。Pythonのような動的型付言語は自動でキャストしてくれるため、あまり意識することはなくなりましたが、int型は32bitで表現されます。最初の1bitはプラマイ判定のために使用されるので、残りの31bitを使って、-2^31~2^31-1を表現します。しかし、実際、2^31まで使うことはよっぽどないので、組み込み系やネットワークなど、少ない値で十分な場合、C言語ではshort int型という半分の16bitへ圧縮した表現を使います。これの表現域は-2^15~2^15-1= -32,768~32,767 です。例えば、自動販売機の値段管理など、明らかに2^31も必要ない場面は、これで十分ですね。その分メモリを半分にできました。
+
+float型でも同じことを考えてみましょう。float型は32bitの浮動小数点で、1bitは符号、8bitが指数部、残りの23bitが仮数部でした。覚えていますか？これによって、-2^(指数部-127)\*1.仮数部が取りうる値となりました。ここで、指数部は8bitなので2^8 =256、つまり-127~128の値までとります。また、仮数部は23+1=24bitなので、2^24 =16,777,216となります。この2つによって、1.175494 10^-38 ~ 3.402823\*10^38までの値をfloatでは取ることが出来ました。細かいことは置いといて、こんなに大きな数字、あまり使い道ないということはわかると思います。そのためint型と同様にfloat型でもまずは16bitすることで、メモリを半分に節約します。
+
+float型はint型と違って、一筋縄ではいきません。さて、指数部と仮数部をどの程度節約しましょう？節約の仕方で仮数部を重視する`fp16`と指数部を大事にする`bf16`の2種類の方法が現在採用されています。ちなみに、通常のfloat型は`fp32`と呼ばれています。
+
+- `fp16`：`torch_dtype=torch.float16`で指定できます。これは符号1bit、指数部5bit、仮数部10bitで表現できます。このように、指数部を3bit削減することで、仮数部を10bit分確保しています。これは表示できる範囲を削減する代わりに精度を維持することを意味しています。
+- `bf16`：`torch_dtype=torch.bfloat16`で指定できます。これは符号1bit、指数部8bit、仮数部7bitで表現できます。fp32と比較すると、指数部は維持しており、仮数部のみガッツリ削減されてることがわかります。大雑把な精度でもいいので、表示範囲を保というという意思を感じられます。
+
+> [!tip]
+>
+> 正直、fp16でもbf16でも、明らかな体感の違いはないです。ただ、経験則的に学習時にbf16を使っておいて、推論時にfp16を使うことが一番効率的だろうという知見が得られています。どこかに論文ないかな？
+
+とりあえず、細かったですが、`torch_dtype=torch.float16`か`torch_dtype=torch.bfloat16`を指定しておけば、メモリ使用量が半分に抑えられることがわかったと思います。半分ということは倍のモデルを動かせるようになるので、13Bを7B程度のサイズに圧縮することに成功しました。
+
+もっと圧縮できないでしょうか？LLMでは大量のパラメータを用いるため、細かい数字より大域的な大小関係だけで実は十分なんてことも知られています([Ma et al., 2024](https://arxiv.org/abs/2402.17764))。Transformersでは、8bitと4bitの推論を手軽にサポートしています。一方、16bitよりも下は標準化がまだまだ追いついておらず、[bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) ([Dettmers et al., 2022](https://arxiv.org/abs/2208.07339))や[GPTQ](https://github.com/ModelCloud/GPTQModel) ([Frantar et al., 2023](https://arxiv.org/abs/2210.17323)) のように様々な手法で量子化されていますが、現状はbitsandbytesが優勢です。Transformersで8bitと4bitの推論を行うには、以下のように少しだけ複雑なloadが必要となりますが、やっていることは引数を一つ追加しているだけです。
+
+```python
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。quantization_configが新たに追加されている。load_in_8bit=Trueとすればよい。
+qconfig = BitsAndBytesConfig(load_in_8bit=True) # load_in_4bit=Trueなら4bit
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=qconfig)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+print(output[0]["generated_text"])
+
+```
+
+pipeで`quantization_config`が読み込めれば、いいのですが、現状なぜかそうなっていないので、modelとtokenizerを別々に呼び出し、pipelineへ格納する必要があります。また、ネイティブサポートされていないOSなどあるかもしれませんので、全ての環境で動くというわけではないことを頭の片隅に入れておいてください。またGPTQでは、さらに多様な量子化をサポートしていますが、専用のモデルが必要などあり、手軽さの観点から、実験するにはbitsandbytesで十分です。また、4bitまでの量子化なら性能低下をほとんど起こさないと言われています ([Dettmers and Zettlemoyer, 2023](https://arxiv.org/abs/2212.09720))。これで、fp32のときと比較して、約8倍のモデルを使用することが可能となりました。
+
+> [!note]
+>
+> 今回は説明のため、簡略化して最小限のパラメータのみで説明をしていますが、Transformersには色々パラメータあるので、例えば`device_map`や`use_cache`など、細かい設定によってパフォーマンスが変わるため、色々ブログ記事などからでも参考になる部分があれば、試してみてください。正直僕も全てのパラメータを把握しきれていません...
+
+> [!tip]
+>
+> `quantization_config`について、私は以下の設定を使用しています。
+>
+> ```python
+> qconfig = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
+> ```
+
+---
+
+### 補足：メモリ使用量を可視化してみる
+
+定量的に証拠を示さないと納得しない方もいるでしょう。実際にロードされたときのメモリ使用量を測ってみましょう。
+
+32bitの場合：
+
+```python
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。      
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+# print(output[0]["generated_text"])
+
+print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
+
+---OUTPUT---
+|===========================================================================|
+|                  PyTorch CUDA memory summary, device ID 0                 |
+|---------------------------------------------------------------------------|
+|            CUDA OOMs: 0            |        cudaMalloc retries: 0         |
+|===========================================================================|
+|        Metric         | Cur Usage  | Peak Usage | Tot Alloc  | Tot Freed  |
+|---------------------------------------------------------------------------|
+| Allocated memory      |  25713 MiB |  25815 MiB |  32526 MiB |   6813 MiB |
+|       from large pool |  25712 MiB |  25814 MiB |  28776 MiB |   3064 MiB |
+|       from small pool |      1 MiB |     66 MiB |   3750 MiB |   3749 MiB |
+|---------------------------------------------------------------------------|
+...
+...
+```
+
+16bitの場合：
+
+```python
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。      
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+# print(output[0]["generated_text"])
+
+print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
+
+---OUTPUT---
+|===========================================================================|
+|                  PyTorch CUDA memory summary, device ID 0                 |
+|---------------------------------------------------------------------------|
+|            CUDA OOMs: 0            |        cudaMalloc retries: 0         |
+|===========================================================================|
+|        Metric         | Cur Usage  | Peak Usage | Tot Alloc  | Tot Freed  |
+|---------------------------------------------------------------------------|
+| Allocated memory      |  12860 MiB |  12911 MiB |  16439 MiB |   3578 MiB |
+|       from large pool |  12860 MiB |  12860 MiB |  12860 MiB |      0 MiB |
+|       from small pool |      0 MiB |     50 MiB |   3578 MiB |   3578 MiB |
+|---------------------------------------------------------------------------|
+...
+...
+```
+
+8bitの場合：
+
+```python
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。      
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quantization_config)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+# print(output[0]["generated_text"])
+
+print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
+
+---OUTPUT---
+|===========================================================================|
+|                  PyTorch CUDA memory summary, device ID 0                 |
+|---------------------------------------------------------------------------|
+|            CUDA OOMs: 0            |        cudaMalloc retries: 0         |
+|===========================================================================|
+|        Metric         | Cur Usage  | Peak Usage | Tot Alloc  | Tot Freed  |
+|---------------------------------------------------------------------------|
+| Allocated memory      |   6701 MiB |   6801 MiB |  42901 MiB |  36199 MiB |
+|       from large pool |   6696 MiB |   6796 MiB |  37945 MiB |  31249 MiB |
+|       from small pool |      5 MiB |     56 MiB |   4955 MiB |   4950 MiB |
+|---------------------------------------------------------------------------|
+...
+...
+```
+
+4bitの場合：
+
+```python
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。      
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+quantization_config = BitsAndBytesConfig(load_in_4bit=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quantization_config)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+# print(output[0]["generated_text"])
+
+print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
+
+---OUTPUT---
+|===========================================================================|
+|                  PyTorch CUDA memory summary, device ID 0                 |
+|---------------------------------------------------------------------------|
+|            CUDA OOMs: 0            |        cudaMalloc retries: 0         |
+|===========================================================================|
+|        Metric         | Cur Usage  | Peak Usage | Tot Alloc  | Tot Freed  |
+|---------------------------------------------------------------------------|
+| Allocated memory      |   4000 MiB |   6426 MiB |  76709 MiB |  72708 MiB |
+|       from large pool |   3872 MiB |   6426 MiB |  72058 MiB |  68186 MiB |
+|       from small pool |    128 MiB |    179 MiB |   4650 MiB |   4522 MiB |
+|---------------------------------------------------------------------------|
+...
+...
+```
+
+私の環境設定の場合：
+
+```python
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。      
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
+model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quantization_config)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=False)
+# print(output[0]["generated_text"])
+
+print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
+
+---OUTPUT---
+|===========================================================================|
+|                  PyTorch CUDA memory summary, device ID 0                 |
+|---------------------------------------------------------------------------|
+|            CUDA OOMs: 0            |        cudaMalloc retries: 0         |
+|===========================================================================|
+|        Metric         | Cur Usage  | Peak Usage | Tot Alloc  | Tot Freed  |
+|---------------------------------------------------------------------------|
+| Allocated memory      |   3695 MiB |   6426 MiB | 133446 MiB | 129751 MiB |
+|       from large pool |   3596 MiB |   6426 MiB | 106128 MiB | 102532 MiB |
+|       from small pool |     98 MiB |    150 MiB |  27317 MiB |  27218 MiB |
+|---------------------------------------------------------------------------|
+...
+...
+```
+
+`Allocated memory`を確認すると、およそ、bit数に比例してメモリ使用量が少なくなっているのがわかると思います。また、私の普段使っている設定だと若干ですが、メモリの圧縮がさらに成功しています。このように、細かい設定を探索すると面白いかもしれません。なお、精度に関しては落ちないと言われていますが、あくまでベンチマーク結果なので、実際の環境ではどうか確認したほうがいいです。
+
+---
+
+### vLLM
 
 
 
 
 
+### 参考資料
+
+- https://www.cc.kyoto-su.ac.jp/~yamada/pB/bit.html
+- https://e-words.jp/w/%E7%9F%AD%E6%95%B4%E6%95%B0%E5%9E%8B.html
+- https://zenn.dev/timoneko/books/8a9cab9c5caded/viewer/330bf9
+- https://ja.wikipedia.org/wiki/%E5%8D%8A%E7%B2%BE%E5%BA%A6%E6%B5%AE%E5%8B%95%E5%B0%8F%E6%95%B0%E7%82%B9%E6%95%B0
+- https://zenn.dev/kun432/scraps/6fc012752afa62
+- https://note.com/npaka/n/nb4b1ef2f77cf
+- https://huggingface.co/docs/transformers/v4.52.3/quantization/overview
+- https://note.com/npaka/n/nc9ca523d5cd5#79b1ff6c-0c26-4c63-929a-1af786c93638
+
+---
 
 
-はじめに、補足で内部の挙動についてのレクチャー
-
-次にquantization
-
-そのあとに、
 
 
+
+baseとchatの違い
+
+vLLM
+
+
+
+chat templateの話
 
 入力を複数受けるためです。
 
@@ -840,11 +1167,23 @@ print(output[1]["generated_text"])
 
 
 
+
+
+
+
+
+
+
+
+
+
 export HF_HOME="/cl/home2/share/huggingface"
 
 export HF_HUB_CACHE="/cl/home2/share/huggingface/hub"
 
 export HF_ASSETS_CACHE="/cl/home2/share/huggingface/assets"
+
+TODO: training
 
 
 
