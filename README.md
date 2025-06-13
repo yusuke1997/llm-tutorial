@@ -100,6 +100,14 @@ uv pip install torch
 
 これで、Transformersのinstallは完了です。
 
+また、以下のライブラリも後半で使うかもしれませんので、インストールしておいてください。
+
+```bash
+uv pip install vllm
+uv pip install streamlit
+uv pip install sacrebleu
+```
+
 念の為、GPUが使えることを以下のコマンドで確認してください。`True`になっていたらGPU環境で実行可能です。
 
 ```bash
@@ -339,16 +347,313 @@ print(generated_text)
 
 ## 1.1 出力を多様にする
 
-先ほどまでのコードは何回実行しても一意な結果が得られました。これは
+先ほどまでのコードは何回実行しても一意な結果が得られました。これは`pipe(prompt, max_length=100, do_sample=False)`のように、`do_sample=False`としていたからです。試しに`do_sample=True`へ変更して何回か実行してみてください。
 
+```python
+from transformers import pipeline
+import torch
 
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
 
-あと
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+output = pipe(prompt, max_length=100, do_sample=True) # 変更箇所
+print(output[0]["generated_text"])
+```
+
+出力結果（1回目）：
 
 ```bash
-uv pip install vllm
-uv pip install streamlit
+Tell me a story about a dragon.
+
+Dragons are mythical creatures that are often depicted as powerful, fire-breathing beings with wings and claws. They are often associated with magic, wisdom, and power. In this story, a young dragon named Ember lives in a hidden cave deep in the mountains. Ember is a curious and adventurous dragon, always eager to explore the world beyond his cave. One day, Ember
 ```
+
+出力結果（2回目）：
+
+```bash
+Tell me a story about a dragon.
+
+Sure! Here is a story about a dragon:
+
+Once upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales that shone like gold in the sunlight and wings that stretched as wide as the horizon. He was a fierce and fearsome creature, with eyes that g
+```
+
+出力結果（3回目）：
+
+```
+Tell me a story about a dragon.
+
+Once upon a time, in a land far, far away, there was a magnificent dragon named Scorch. Scorch was unlike any other dragon in the land. While most dragons were content to spend their days basking in the sun and hoarding treasure, Scorch was always on the move, exploring new lands and seeking out adventure.
+
+One day, as Scorch was soaring through
+```
+
+このように、実行するたびに結果が変わりました。ところで`pipeline`等のTransformersのモジュールには、`num_return_sequences`という引数があります。何度も実行する代わりに、一括で出力を得る方法があります。
+
+```python
+...
+# 4. ここでプロンプトをLLMに入力して、出力を得る。（注意：output-> outputsに変数名変更している）
+outputs = pipe(prompt, max_length=100, do_sample=True, num_return_sequences=3) # 変更箇所
+print(outputs)
+# 以下出力結果
+[
+  {'generated_text': 'Tell me a story about a dragon.\n\nI want to hear a story about a dragon that is a little bit different from the usual ones. Can you tell me a story about a dragon who is not evil, but rather a protector of the land and its people?\n\nOf course! Here is a story about a dragon who is not evil, but rather a protector of the land and its people:\n\nOnce upon a time, in a far'}, 
+  {'generated_text': 'Tell me a story about a dragon.\n\nOnce upon a time, in a far-off land, there was a magnificent dragon named Scorch. Scorch was unlike any dragon that had ever been seen before. He was covered in shimmering scales of gold and silver, and his wings were as wide as the horizon. He had a fiery mane that flowed like a river of flame, and his eyes glowed like embers from the'}, 
+  {'generated_text': 'Tell me a story about a dragon.\n\nDragon Story\n\nOnce upon a time, in a land far, far away, there lived a magnificent dragon named Scorch. Scorch was unlike any other dragon in the land, for he had a heart of gold and a fierce determination to protect his home and the creatures that lived within it.\n\nScorch lived in a vast, sprawling cave system deep within a great mountain range.'}
+]
+```
+
+このように、`do_sample=True, num_return_sequences=3`と、生成する文数を指定すると、多様な出力を同時に生成してくれます。
+
+基本的にLLMの生成は、次のトークンとして最も確率の高いものを選択することにより、終了トークンが出現するまで生成し続けます。これをMAPデコーディング（Maximum a Posteriori decoding）あるいは、確定的デコーディング（Deterministic decoding）と呼びます。特に今回の場合、シンプルに一番確率の高い単語のみを選択しているのでGreedy decodingと呼びますが、用語が多くなって混乱するので、「こんな単語もあるんだ」くらいで十分です。重要なのは、`do_sample=False`のときの手法では、入力したプロンプトに対して出力が一意に定まるということです。そのため、`do_sample=False`には`num_return_sequences`という引数は使うことが出来ません。
+
+一方`do_sample=True`の場合、生成結果が変わり、出力が一意に定まらなくなりました。これは確率的デコーディング（Stochastic decoding）といい、最も確率の高いトークンを選択するのではなく、若干のランダム性をもたせることによって、出力を多様にしています。実用上は、正直`do_sample=True`で十分ですが、いくつかのパラメータを操作することによって、「どの程度多様か」を調整できます。
+
+以下のコードは`top_p=0.9, temperature=0.8`を4番目のコードに追加しています。この2つのパラメータを使って多様性を制御していきましょう。なお、目視で多様性を測るより、定量的に測るほうがわかりやすいので、ここではSelf-BLEU ([Zhu et al., 2018](https://dl.acm.org/doi/10.1145/3209978.3210080))を用いて、多様性を測ろうと思います。詳細は省きますがとりあえず、0から100で<u>スコアが低ければ低いほど</u>、各文が似ていないので、つまり多様であると考えてください。
+`top_p`(0から1まで)と`temperature`（0より上の値をとれるが、1くらいまでで十分。思い切って2まで。）の値、必要に応じて`num_return_sequences`を変更して出力文の変化と、スコアがどのように変動するか試してみてください。（注意：あくまでランダムなため、数値は変動します。文数が多ければ多いほど安定しますが、今は傾向を掴むために、色々数値を変更して遊んでみてください。）
+
+```python
+from transformers import pipeline
+import torch
+import sacrebleu # 定量的に多様性を測るため、metricを追加
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）：基本的にここを書き換えることがメインになる。
+prompt = "Tell me a story about a dragon."
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+outputs = pipe(prompt, max_length=100, do_sample=True, num_return_sequences=3,
+              top_p=0.9, temperature=0.8) # 追記箇所
+print(outputs)
+
+# (Option) Self-BLEUの計算。低ければ低いほうがいい。
+scores = []
+generated_texts = [output["generated_text"].strip() for output in outputs]
+for i, hypo in enumerate(generated_texts):
+    refs = generated_texts[:i] + generated_texts[i+1:] # 他の全てを参照とする
+    bleu = sacrebleu.corpus_bleu([hypo], [refs]) # sacrebleuはリストを受け取る
+    scores.append(bleu.score)
+
+# Self-BLEUの結果。低ければ低いほうが、多様性が高いので注意。
+for i, score in enumerate(scores):
+    print(f"Self-BLEU for output {i+1}: {score:.2f}")
+print(f"Average Self-BLEU: {sum(scores)/len(scores):.2f}")
+```
+
+出力結果（top_p=0.9, temperature=0.8の場合）：
+
+```python
+[
+  {'generated_text': 'Tell me a story about a dragon.\n\n---\n\nOnce upon a time, in a land far, far away, there lived a magnificent dragon named Scorch. Scorch was unlike any dragon that had ever been seen before. He was covered in shimmering scales that glistened in the sunlight, and his wings stretched out wide enough to block out the entire sky.\n\nScorch lived in a great, sprawling cave deep within'},
+  {'generated_text': 'Tell me a story about a dragon.\n\n"The dragon\'s name was Scorch, and he was the most fearsome creature in all the land. He had scales as black as coal, wings as wide as a castle, and a fiery breath that could melt steel. Scorch lived in a great cave deep within a mountain, and he spent his days sleeping and breathing fire.\n\nOne day, a brave knight named Sir Edward decided to'},
+  {'generated_text': "Tell me a story about a dragon.\nI'd be happy to! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as black as night and wings that shone like the brightest stars. He was a fierce creature, feared by all who lived within his domain"}
+]
+Self-BLEU for output 1: 19.34
+Self-BLEU for output 2: 19.36
+Self-BLEU for output 3: 31.67
+Average Self-BLEU: 23.46
+```
+
+出力結果（top_p=0.1, temperature=0.8の場合）：
+
+```python
+[
+  {'generated_text': 'Tell me a story about a dragon.\n\nSure! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as red as fire and wings that stretched as wide as the sky. He lived in a great, sprawling cave deep within a mountain, surrounded by piles of'}, 
+  {'generated_text': 'Tell me a story about a dragon.\n\nSure! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as red as fire and wings that stretched as wide as the sky. He lived in a great, sprawling cave deep within a mountain, surrounded by piles of'}, 
+  {'generated_text': 'Tell me a story about a dragon.\n\nSure! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as red as fire and wings that stretched as wide as the sky. He lived in a great, sprawling cave deep within a mountain, surrounded by piles of'}
+]
+Self-BLEU for output 1: 100.00
+Self-BLEU for output 2: 100.00
+Self-BLEU for output 3: 100.00
+Average Self-BLEU: 100.00
+```
+
+出力結果（top_p=0.5, temperature=0.8の場合）：
+
+```python
+[
+  {'generated_text': 'Tell me a story about a dragon.\n\nDragon Story\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was unlike any other dragon in the land, for he had a heart of gold and a fierce determination to protect his home and the creatures within it.\n\nScorch lived in a vast, sprawling cave system deep within a mountain range. The cave was filled'},
+  {'generated_text': 'Tell me a story about a dragon.\n\nSure! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as black as coal and eyes that glowed like embers. He lived in a great, sprawling cave system deep within a mountain range, surrounded by piles'}, 
+  {'generated_text': 'Tell me a story about a dragon.\n\nSure! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as red as fire and wings that stretched wider than the horizon. He lived in a great cave high up in the mountains, surrounded by a hoard of treasure'}
+]
+Self-BLEU for output 1: 46.92
+Self-BLEU for output 2: 46.91
+Self-BLEU for output 3: 37.63
+Average Self-BLEU: 43.82
+```
+
+出力結果（top_p=0.5, temperature=0.1の場合）：
+
+```python
+[
+  {'generated_text': 'Tell me a story about a dragon.\n\nDragon stories are a classic tale that has been told and retold for centuries. They are filled with magic, adventure, and of course, dragons. Here is a story about a dragon that I hope you will enjoy:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was unlike any dragon that had ever been seen before. He'},
+  {'generated_text': 'Tell me a story about a dragon.\n\nSure! Here is a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as red as fire and wings that stretched as wide as the sky. He lived in a great, sprawling cave deep within a mountain, surrounded by piles of'}, 
+  {'generated_text': 'Tell me a story about a dragon.\n\nDragon stories are a classic tale that has been told and retold for centuries. They are filled with magic, adventure, and of course, dragons. Here is a story about a dragon that I hope you will enjoy:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was unlike any dragon that had ever been seen before. He'}
+]
+Self-BLEU for output 1: 42.13
+Self-BLEU for output 2: 42.13
+Self-BLEU for output 3: 100.00
+Average Self-BLEU: 61.42
+```
+
+出力結果（top_p=0.5, temperature=1.5の場合）：
+
+```python
+[
+  {'generated_text': "Tell me a story about a dragon. I want to be amazed.\nA few days ago, a man named Tom was wandering through a dense forest when he stumbled upon a magnificent dragon. The dragon was unlike any Tom had ever seen before, with scales that shimmered in the sunlight like diamonds and wings that stretched as wide as the trees themselves.\nTom was amazed by the dragon's size and beauty, but he was"},
+  {'generated_text': "Tell me a story about a dragon. 🐉\n\nSure, here's a story about a dragon:\n\nOnce upon a time, in a far-off land, there lived a magnificent dragon named Scorch. Scorch was the largest and most powerful dragon in all the land, with scales as black as coal and eyes that glowed like embers. He lived in a great cave deep within a towering mountain, surrounded"},
+  {'generated_text': 'Tell me a story about a dragon.\nAsked by: Sophie M\nOnce upon a time, in a far-off land, there was a magnificent dragon named Scorch. Scorch was unlike any dragon that had ever been seen before, for he was covered in shimmering scales of gold and silver, and his wings were as wide as the sun.\n\nScorch lived in a great, sprawling cave system deep within a towering'}
+]
+Self-BLEU for output 1: 14.11
+Self-BLEU for output 2: 14.09
+Self-BLEU for output 3: 19.06
+Average Self-BLEU: 15.75
+```
+
+出力結果（top_p=1.0, temperature=10の場合）：
+
+```python
+[
+  {'generated_text': 'Tell me a story about a dragon. This... dragone doesn�� like its home because itв�eton; a cage in his chom where his homeвъсреа where, like other creature with out feet the and wasвore but. вThis must the a small dank is. All is in pitch yoke y� dragonly see th dragО him through window bars hd th, dark gвt that has t in their p of c he'},
+  {'generated_text': 'Tell me a story about a dragon. It had a... 5 Anunciados (Dragnelli # Drag) are dragoni? (Answerer... As much happiness and comfort asto my mother... Tame, sweet-facedyouth... Layw from Manaos, his mother having tchenlse. As Much happ... He t... This story doesnï¼‘ Dragon born to an old wicked wo... 5Anunciao da Morrã'}, 
+  {'generated_text': 'Tell me a story about a dragon. This should not feel forced?’\nYou say ‘Ok Sure. How about the story on dragoni?” Dragone smiled broad the smile'}
+]
+Self-BLEU for output 1: 11.35
+Self-BLEU for output 2: 11.36
+Self-BLEU for output 3: 6.67
+Average Self-BLEU: 9.80
+```
+
+なんとなく、感覚つかめましたか？
+
+top_pもtemperatureも低いほうが多様性が減少し、top_p=0.1, temperature=0.8の場合では、全てが同じ出力になりました。一方、高ければよいというわけでもなく、top_p=1.0, temperature=10の場合では出力が崩壊しています。このように、多様にすればするほど、自然な文から離れる場合があるので、パラメータ調整が肝になってきます。基本的に、top_p=0.9, temperature=0.8とかであれば、適度に多様でいい感じの文が生成される傾向があるようですが、あくまで傾向なので、モデルやタスクによって話が変わります。私が研究で使う場合、再現性がある程度必要な場面が多いので、最初は低いパラメータからどんどん大きくしていきます。両方同時に変更することはせずに、ガスバーナーのガスと空気のように、片方ずつ少しずつ調整して感覚を掴んでください。
+
+> [!Tip]
+>
+> 乱数を使っているため、出力結果が毎回変動してしまいます。そのため、乱数を固定して、出力の再現性を担保する場合が研究などではあります。乱数の固定方法として楽なのは、Transformersの`set_seed()`関数を使うことです。
+>
+> ```python
+> from transformers import pipeline, set_seed
+> 
+> set_seed(0)  # 適当なSEED値を入力して固定
+> ...
+> ```
+
+
+
+---
+
+### 補足：もう少し詳細な動作の仕組み
+
+先程は`top_p`と`temperature`を<u>出力を多様にするパラメータ</u>とぼかして説明しましたが、もう少しだけ詳しく説明します。そもそもLLMは「次のトークンを予測する」を繰り返すことで文を生成します。各生成時には、各語彙の全てに対する確率を計算し、その中でもっとも良いものが選ばれるのがMAP decodingでした。もしランダム性をもたせるのであれば、この単語選択時に、最も確率が高いものを選ぶのではなく、全ての語彙から適当なトークンを選択すればよいです。しかしそれでは文が崩壊してしまいますので、せっかくなら、この確率を使いたいです。次のような確率を考えてみましょう。
+
+```python
+# Tell me a story about a dragon.が与えられたときの、次の単語の確率と想定
+[
+    ("the", 0.25),
+    ("a", 0.20),
+    ("dragon", 0.15),
+    ("flew", 0.10),
+    ("over", 0.08),
+    ("and", 0.07),
+    ("castle", 0.06),
+    ("into", 0.04),
+    ("flames", 0.03),
+    ("darkness", 0.02),
+]
+```
+
+確率なので、合計1になっていることを確認してください。モックで10個のみですが、実際には数万単位であります。普通なら一番確率が高い"the"を選択しますが、`top_p`の場合、累積確率（上から順に確率を足した合計）の中からランダムに単語を選択します。もし`top_p=0.8`なら、"the"から"and"まで足した0.85（"over"までなら0.78なので）までの単語の中からランダムに生成するということを繰り返します。これをTop-p (nucleus) sampling ([Holtzman et al., 2020](https://openreview.net/forum?id=rygGQyrFvH))といいます。
+
+
+
+> [!Note]
+>
+> Top-p samplingのみを今回は対象にしますが、他にも色々なSampling decoding方法があります。例えば<u>上位k件までを対象</u>とするTop-k sampling ([Fan et al., 2018](https://aclanthology.org/P18-1082/))は、top_k=3などと指定すれば、"dragon"までの3つの単語の中からランダムに選択します。
+>
+> ```python
+> pipe(prompt, max_length=100, do_sample=True, num_return_sequences=3,
+>               top_p=1.0, top_k=3, temperature=1.0)
+> ```
+>
+> のように`top_k`を追加すれば、自動的にTop-k Samplingになります。ここでのポイントは`top_p`などのパラメータと組み合わせて使用可能なところです。累積確率で`top_p`のしきい値までトークンを選択するか、`top_k`のしきい値に達するまでのどちらかまで単語を選択するなどの複雑な指定ができます。概念を考えれば、なんだかできそうでしょう？利点として、`top_p`の場合、どの単語の選択でもいい場合、全ての単語の確率がほぼ似たような分布になります。その場合、候補の単語が膨大になり、明らかにふさわしくない変な単語が選択されるかもしれません。それを回避するために、`top_k`でマックスで扱う単語数を決めておくと、このような確率がほぼ均等な場合に対応可能となります。
+>
+> `top_p`も`top_k`も確率分布からしきい値を決めて、その範囲の単語を選択していましたが、全ての語彙からランダムに単語を選ぶ方法をAncestral Sampling ([Robert, 1999](https://link.springer.com/book/10.1007/978-1-4757-4145-2))といいます。以下のように設定すれば動きます。
+>
+> ```python
+> pipe(prompt, max_length=100, do_sample=True, num_return_sequences=3,
+>               top_p=1.0, top_k=0, temperature=1.0) # top_k=0は設定しないという意味。つまり全ての単語を対象とする
+> ```
+>
+> 他にいい方法は考えられないでしょうか？先ほど`top_p`と`top_k`を併用するモチベーションと利点について、 
+>
+> > `top_p`の場合、どの単語の選択でもいい場合、全ての単語の確率がほぼ似たような分布になります。その場合、候補の単語が膨大になり、明らかにふさわしくない変な単語が選択されるかもしれません。
+>
+> と説明しました。組み合わせる以外にも、例えば、確率がしきい値以下の単語を除去することで、明らかに不適な単語を除去する方法が考えられます。このようにしきい値で下限を決める方法をEpsilon Sampling ([Hewitt et al., 2022](https://aclanthology.org/2022.findings-emnlp.249/))いいます。
+>
+> ```python
+> pipe(prompt, max_length=100, do_sample=True, num_return_sequences=3,
+>               epsilon_cutoff=0.05, temperature=1.0) # epsilon_cutoffで下限を指定。0.02がよく用いられている。
+> ```
+>
+> この場合、"into", "flames", "darkness"の単語の確率が0.05未満なので、これらを除外した中からランダムに選択されます。
+>
+> 他になにかいいアイデアはありますか？もし思いついて実行してベンチマークで良い値が取れたら論文を書けるので、時間があったら考えてみてください。他に細かい設定などは[公式ドキュメント](https://huggingface.co/docs/transformers/ja/main_classes/text_generation)にとても詳細に書かれているので、これも時間があれば確認してみたら、面白い気づきや発見があるかもしれません。
+
+> [!Warning]
+>
+> ここでは、簡略化するためランダムと言及していますが、実際には選択したni
+>
+> （ただ、例えば、Top-kの原著論文にはrandomのみしか書かれていなかったりと、実際曖昧になる部分です。）
+>
+> また、beamの説明も省いたので、若干
+
+
+
+
+
+
+
+
+
+
+
+### 参考文献
+
+- https://github.com/tehhuu/Self-BLEU/blob/master/Self-BLEU.py
+  - めんどくさかったので、若干ChatGPTに修正してもらった。おおまかな挙動は変わらないはず。
+- https://cyberagent.ai/blog/research/16115/
+- https://note.com/npaka/n/n5d296d8ae26d
+- https://techblog.a-tm.co.jp/entry/2023/04/24/181232
+- https://qiita.com/suzuki_sh/items/8e449d231bb2f09a510c
+- https://zenn.dev/hellorusk/articles/1c0bef15057b1d
+- https://huggingface.co/docs/transformers/main_classes/model#transformers.generation_utils.GenerationMixin.generate
+- 確率の適当な例をめんどくさかったので、ChatGPT（GPT-4o）に作ってもらった。
+  - プロンプト：「top_pとtop_kの話をしたいので、10個程度でトークンの確率っぽいリストを作ってください」
+
+- https://arxiv.org/abs/2410.15021
+- https://huggingface.co/docs/transformers/v4.28.1/generation_strategies
+- https://github.com/naist-nlp/mbrs/tree/main
+
+ボランティア募集：言葉で説明はしんどいので、誰か図をつけてくれたら嬉しいです...
+
+
+
+
 
 
 
@@ -356,7 +661,7 @@ uv pip install streamlit
 
 次にquantization
 
-do_sampleについてかな
+そのあとに、
 
 
 
