@@ -2,11 +2,13 @@
 
 LLMの使い方に関する講座です。
 
+Author: [坂井 優介 (Yusuke Sakai)](https://www.yusuke1997.jp/), [奈良先端科学技術大学院大学](https://www.naist.jp/)・[自然言語処理学研究室](https://nlp.naist.jp/ja/)・助教
+
+Date: 2025年6月14日
+
 >  [!NOTE]
 >
 > LLMにも種類がありますが、ここでは基本的に、CausalLM（GPTやLlamaのように文を逐次的に生成するモデル）を念頭に説明しています。BERTなどのencoderモデルや、mamba, LLaDAのようにTransformer系以外のモデルには、特殊な処理や関数、パッケージのインストールが必要になるかもしれませんが、一般的にLLMと呼ばれるモデルの大半はサポートできていると思います。
-
-
 
 ## 0.1 環境設定
 
@@ -862,9 +864,9 @@ torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 86.00 MiB. GP
 
 また長文生成や大量の文生成など、メモリを消費するため、生成文長に制限がかかったり、そもそも大きいモデルは推論速度が遅かったりと、なにかと不都合が生じます。そのためメモリを節約して、より大きいモデルを速い推論速度で実現したいという欲張りなニーズがあります。これを実現するのが量子化です。
 
-情報科学のおさらいです。Pythonのような動的型付言語は自動でキャストしてくれるため、あまり意識することはなくなりましたが、int型は32bitで表現されます。最初の1bitはプラマイ判定のために使用されるので、残りの31bitを使って、-2^31~2^31-1を表現します。しかし、実際、2^31まで使うことはよっぽどないので、組み込み系やネットワークなど、少ない値で十分な場合、C言語ではshort int型という半分の16bitへ圧縮した表現を使います。これの表現域は-2^15~2^15-1= -32,768~32,767 です。例えば、自動販売機の値段管理など、明らかに2^31も必要ない場面は、これで十分ですね。その分メモリを半分にできました。
+情報科学のおさらいです。Pythonのような動的型付言語は自動でキャストしてくれるため、あまり意識することはなくなりましたが、int型は32bitで表現されます。最初の1bitはプラマイ判定のために使用されるので、残りの31bitを使って、-2^31~2^31-1を表現します。しかし、実際、2^31まで使うことはよっぽどないので、組み込み系やネットワークなど、少ない値で十分な場合、C言語ではshort int型という半分の16bitへ圧縮した表現を使います。これの表現域は-2^15\~2^15-1= -32,768\~32,767 です。例えば、自動販売機の値段管理など、明らかに2^31も必要ない場面は、これで十分ですね。その分メモリを半分にできました。
 
-float型でも同じことを考えてみましょう。float型は32bitの浮動小数点で、1bitは符号、8bitが指数部、残りの23bitが仮数部でした。覚えていますか？これによって、-2^(指数部-127)\*1.仮数部が取りうる値となりました。ここで、指数部は8bitなので2^8 =256、つまり-127~128の値までとります。また、仮数部は23+1=24bitなので、2^24 =16,777,216となります。この2つによって、1.175494 10^-38 ~ 3.402823\*10^38までの値をfloatでは取ることが出来ました。細かいことは置いといて、こんなに大きな数字、あまり使い道ないということはわかると思います。そのためint型と同様にfloat型でもまずは16bitすることで、メモリを半分に節約します。
+float型でも同じことを考えてみましょう。float型は32bitの浮動小数点で、1bitは符号、8bitが指数部、残りの23bitが仮数部でした。覚えていますか？これによって、-2^(指数部-127)\*1.仮数部が取りうる値となりました。ここで、指数部は8bitなので2^8 =256、つまり-127\~128の値までとります。また、仮数部は23+1=24bitなので、2^24 =16,777,216となります。この2つによって、1.175494 10^-38 \~ 3.402823\*10^38までの値をfloatでは取ることが出来ました。細かいことは置いといて、こんなに大きな数字、あまり使い道ないということはわかると思います。そのためint型と同様にfloat型でもまずは16bitすることで、メモリを半分に節約します。
 
 float型はint型と違って、一筋縄ではいきません。さて、指数部と仮数部をどの程度節約しましょう？節約の仕方で仮数部を重視する`fp16`と指数部を大事にする`bf16`の2種類の方法が現在採用されています。ちなみに、通常のfloat型は`fp32`と呼ばれています。
 
@@ -1120,10 +1122,9 @@ print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
 
 `Allocated memory`を確認すると、およそ、bit数に比例してメモリ使用量が少なくなっているのがわかると思います。また、私の普段使っている設定だと若干ですが、メモリの圧縮がさらに成功しています。このように、細かい設定を探索すると面白いかもしれません。なお、精度に関しては落ちないと言われていますが、あくまでベンチマーク結果なので、実際の環境ではどうか確認したほうがいいです。
 
----
-
-### vLLM
-
+> [!tip]
+>
+> さらに推論速度を高速にするには、[`vLLM`](https://github.com/vllm-project/vllm)や[`ctranslate2`](https://github.com/OpenNMT/CTranslate2)など、専用ライブラリを用いることで、いい感じの最適化をしてくれます。特にvLLMは使いやすいと話題ですが、あいにく私は使ったことがないので、紹介のみとどめておきます。もし開発とかに活用するなら、良い選択肢かもしれません。また、ここで紹介した内容の大半は流用可能です。
 
 
 
@@ -1138,30 +1139,231 @@ print(torch.cuda.memory_summary()) # ここでメモリ使用量を確認する
 - https://note.com/npaka/n/nb4b1ef2f77cf
 - https://huggingface.co/docs/transformers/v4.52.3/quantization/overview
 - https://note.com/npaka/n/nc9ca523d5cd5#79b1ff6c-0c26-4c63-929a-1af786c93638
+- https://zenn.dev/turing_motors/articles/2fd279f6bb25a4
+- https://zenn.dev/rinna/articles/5fd4f3cc12f7c5
+- https://apidog.com/jp/blog/vllm-jp/
+- https://zenn.dev/masahiro_kaneko/articles/1c53da5903560c
+- https://zenn.dev/kun432/scraps/f3387e57b85d67
 
 ---
 
+## 2. Prompt
 
-
-
-
-baseとchatの違い
-
-vLLM
-
-
-
-chat templateの話
-
-入力を複数受けるためです。
+今までプロンプトを`prompt = "Tell me a story about a dragon."`と雑に指定していました。他のプロンプトもいくつか試してみたいと思います。
 
 ```python
-prompts = ["Tell me a story about a dragon.",
-          "Tell me a story about a phantom."]
-output = pipe(prompts, max_length=100, do_sample=False)
-print(output[0]["generated_text"])
-print(output[1]["generated_text"])
+from transformers import pipeline, set_seed
+import torch
+
+set_seed(0)
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）。ここをいま複数指定して、効果を試している。
+prompts = ["Please translate to Japanese: Tell me a story about a dragon.",
+           "Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese:",
+           "Please write a short sentence: Tell me a story about a dragon.",
+           "Please paraphrase this sentence: Tell me a story about a dragon.",
+          ]
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+outputs = pipe(prompts, max_length=100, do_sample=True)
+# print(output[0]["generated_text"])
+print(outputs)
 ```
+
+```python
+[
+  [{'generated_text': 'Please translate to Japanese: Tell me a story about a dragon.\n\nDragon Story in Japanese:\n\nOnce upon a time, in a far-off land, there was a magnificent dragon named Ryū. Ryū was a proud creature, with scales of shimmering silver and eyes that shone like the brightest stars in the night sky. He lived in a great mountain, surrounded by a forest teeming with life, and he was the protector'}],
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese:  драконの物語を教えて\n\nHere is the Japanese translation of "Tell me a story about a dragon":\n\nドラゴンの物語を教えて\n\nNote: The word "ドラゴン" (dragon) in Japanese is written with the characters ドラゴン (dragon).'}],
+  [{'generated_text': "Please write a short sentence: Tell me a story about a dragon.\n\nHere is a short sentence about a dragon:\n\nThe dragon's scales glistened in the sunlight as it soared through the sky, its fiery breath illuminating the landscape below."}],
+  [{'generated_text': 'Please paraphrase this sentence: Tell me a story about a dragon.\n\nCan you paraphrase this sentence in a different way?  Of course!  Here is one possibility:\n\n"Can you regale me with a tale of a magnificent beast?"'}]
+]
+```
+
+> [!warning]
+>
+> 言い忘れていましたが、プロンプトをリストで指定すると、複数のプロンプトを同時に試すことが出来ます。注意点として、文字列で入力した場合、リストで返ってきますが、リストを入力したら、二重リストが返ってきます。sampling decodingで複数文生成することが可能なため、入力文のリストと出力文のリストで計2重になっているからです。
+
+` Tell me a story about a dragon.`と入力した時、どのように返答してほしいのか、少し意味を持たせてみました：
+
+1. `Please translate to Japanese:`と先頭につけることで、Tell me a story about a dragon.を日本語に翻訳してほしかったです。結果はRyuが出現しているため、日本の物語っぽいですが、翻訳にはなっていませんね。
+2. 少し工夫を凝らしてみました。`\nEnglish: Tell me a story about a dragon.\nJapanese:`とすることで、英文を明示的に与えた時、日本語を生成してくれるかなと期待していました。結果は`драконの物語を教えて`で惜しかったです。ロシア語が出現しましたが、だいぶ翻訳に近づきましたね。生成結果をよく見てみると途中に`ドラゴンの物語を教えて`と生成されているので、もう少し工夫をすれば狙い通りの出力になりそうです。
+3. 今度は`Please write a short sentence: `と指示することで、短文を生成してもらいました。結果は大成功です！ちゃんと1文のみ出てきました。
+4. もう一個`Please paraphrase this sentence: `で試してみましょう。`Can you regale me with a tale of a magnificent beast?`なので、ちゃんと言い換えしてくれましたが、ドラゴンが獣に変わっているのが、少し気になりますね。ただ誤差の範囲なので、細かいことは気にせずに、まずはそれっぽい生成ができたことを喜びましょう。
+
+このように、与えられた**内容（content; ここでは`Tell me a story about a dragon.`）**に対して、どのような生成すればよいのか指示する文のことを**指示文（instruction）**と呼びます。つまり、我々がプロンプトと呼んでいるものは、実際には、
+
+```math
+プロンプト (prompt) = 指示文 (instruction) + 内容 (content)
+```
+
+となります。
+
+> [!warning]
+>
+> 分野の発展スピードが速く、かつ大人数が研究をしているので用語がある程度揺れています。特に日本語は人や文献によって呼び方が頻繁に変わります。ここで内容とか指示文などと呼んでいるのは、私が勝手に命名しているだけかもしれませんが、研究者や開発者にこの用語で説明しても伝わると思います。大事なのは、概念を掴んでもらうことです。
+
+> [!note]
+>
+> もう少し別な言葉で言えば、指示文は<u>静的な箇所</u>で文面は変化しませんが、内容はユーザの問いかけだったり、検索エンジンなどと組み合わせて、内容を取得するRAGと呼ばれる手法、インタラクティブなやりとりの履歴など、<u>動的に変化</u>する文言のことを指しています。また、内容は1つのみではなく、例えば、会話履歴とユーザの入力のように2つ以上の要素になることも可能です。少し強引ですが、こういう分類にしたほうが後々都合が良いかもしれません。
+
+ここで、contentをいちいちプロンプトに入力するのは大変なので、contentを代入する形にしましょう。pythonの[f-string](https://note.nkmk.me/python-f-strings/)はご存知でしょうか？以下のようにf-stringを用いれば、簡単にcontentを指示文に埋め込むことが出来ます：
+
+```python
+
+content = 'Tell me a story about a dragon.'
+prompts = [f"Please translate to Japanese: {content}",
+           f"Please translate to Japanese: \nEnglish: {content}\nJapanese:",
+           f"Please write a short sentence: {content}",
+           f"Please paraphrase this sentence: {content}",
+          ]
+print(prompts)
+# ['Please translate to Japanese: Tell me a story about a dragon.', 'Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese:', 'Please write a short sentence: Tell me a story about a dragon.', 'Please paraphrase this sentence: Tell me a story about a dragon.']
+
+```
+
+このように、指示文に内容を埋め込む雛形のことを**指示文テンプレート（instruction template）**と呼びます。一旦テンプレートを作成してしまえば、ユーザのあらゆる問いかけに対して、動的にプロンプトを生成することが出来ます。このため、より良い指示文テンプレートを作成することが肝になってきます。良いプロンプトを生成するために頑張ることを**プロンプトチューニング（Prompt Tuning）**、あるいは**プロンプトエンジニアリング（Prompt Engineering）**といいます。前者は機械的にプロンプトを生成する意味合いも含まれますが、後者は人手で頑張るイメージです。
+
+---
+
+## 2.1 Few-shot Prompting
+
+先程の例では翻訳がうまくいきませんでした。悔しいので少し粘ってみようと思います。子供の頃「ピザって10回言ってよ！」という遊びをやった記憶はありませんか？「ピザピザピザピザ...」「ここは？（肘を指す）」「ひざ」、といったように、ピザとひざが似ているため、何度も言うことで同じく似ている部位の膝と肘の間違えを誘発を狙っています。同様にLLMにもこのアプローチで正しく翻訳してもらえるよう、頑張ってもらいましょう。
+
+今回以下のように事例（exmaple）を1つ、あるいは2ついれて試してみます。
+
+```bash
+Please translate to Japanese:
+English: How are you?
+Japanese: お元気ですか？
+
+Please translate to Japanese:
+English: Today is a beautifulday.
+Japanese: 今日はいい天気ですね。
+
+Please translate to Japanese:
+English: Tell me a story about a dragon.
+Japanese: 
+```
+コードは以下のようになります：
+```python
+from transformers import pipeline, set_seed
+import torch
+
+set_seed(0)
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）。ここをいま複数指定して、効果を試している。
+content = 'Tell me a story about a dragon.'
+prompts = [f"Please translate to Japanese: \nEnglish: {content}\nJapanese:",
+           f"Please translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: {content}\nJapanese:",
+           f"Please translate to Japanese: \nEnglish: How are you?\nJapanese: お元気ですか？\n\nPlease translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: {content}\nJapanese:",
+          ]
+print(prompts)
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+outputs = pipe(prompts, max_length=150, do_sample=True) # 入力文が長いので、max_lengthを150に少し拡張。
+# print(output[0]["generated_text"])
+print(outputs)
+```
+
+```python
+[
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: 私にDragonの物語を語りましょう。\n\nNote: 私 (watashi) is used to indicate the speaker, and Dragon (doragon) is the word for "dragon" in Japanese. 物語 (monogatari) means "story".'}],
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: 龍の物語を教えて下さい。\n\nPlease translate to Japanese: \nEnglish: How are you?\nJapanese: お元気ですか？\n\nPlease translate to Japanese: \nEnglish: What is your name?\nJapanese: あなたの名前は何ですか？\n\nPlease translate to Japanese: \nEnglish: I like to play soccer'}], 
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: How are you?\nJapanese: お元気ですか？\n\nPlease translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: Dragonの物語を聞いて下さい。\n\nPlease translate to Japanese: \nEnglish: What is your name?\nJapanese: お名前は何ですか？\n\nPlease translate to Japanese: \nEnglish: I like cats.\n'}]
+]
+```
+
+0. 何も事例を入れない場合、`私にDragonの物語を語りましょう。`で何かがおかしいです。
+1. 事例を1ついれたとき、`龍の物語を教えて下さい。`となり正しく翻訳できたと思います。
+2. 事例を2ついれたとき、 `Dragonの物語を聞いて下さい。`で、少しおかしくなりましたが、まだ事例を入れないときよりかは文意に沿っていると思います。
+
+このように、事例をいくつか入力することで、指示文に従う能力を向上させたり、翻訳や物語生成などのタスク性能を向上させるテクニックを**Few-shot Prompting**といいます。例えば、1事例ならOne-shot、2事例ならTwo-shot、10事例ならTen-shot、なんならなにも事例を入れないことをZero-shotと言って区別します。もう大雑把にMany-shotなどMassive-shotなど大量の事例を入力したときの性能を研究している方たちも存在しています。とにかく〇〇-shotといった場合、入力する事例数のことなんだなってことだけわかれば十分です。よく考えたら、人間でも具体例を何個か出してもらったほうが相手の要求の意図を汲み取って行動しやすいですよね。LLMもどうやら同じようです。
+
+> [!note]
+>
+> 今回、事例を手打ちしましたが、最適な事例をコーパスなどから選択して自動的に入力する研究も存在しています。どういう文を入力したら性能が上がりそうでしょうか？もし思いついたアイデアでうまくいったら論文が書けます。人間だって具体的な例を伝えようとする時、どんな例を上げようか考えますよね。そういうところから私は時々研究アイデアを考えたりします。余談ですが、この前は「好きな惣菜発表ドラゴン」から研究アイデアの着想を得た研究がACLというNLP分野のトップ会議に採択されました。みなさん、チャンスですよ。
+
+> [!warning]
+>
+> 今までの議論で一旦、後続の生成を無視していました。これは終了トークンがうまく生成されなかったり、そもそも終了条件が指定されていない場合に起こります。これを防ぐには、プロンプトエンジニアリングを頑張る、終了トークンを改行などに変更する、後処理的に生成箇所のみ取得する、[outlines](https://github.com/dottxt-ai/outlines) ([Willard and Louf, 2023](https://arxiv.org/abs/2307.09702))などの制約付きデコーディング手法を用いるなど方法があります。あるいは、そもそもLLMの性能を向上させるか。
+
+---
+
+### 補足：Chat/SFTモデルとベースモデルの違い
+
+そういえば、モデル名についての説明をしていませんでした。
+
+```python
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+```
+
+LLMは多段階の学習を行うことで作られています。
+
+1. 大量のコーパスのデータをとりあえず学習させる**事前学習（Pre-training）**を行うことで、言語生成能力を獲得します。
+2. チャット形式の会話履歴だったり、翻訳データなどの指示文から<u>タスクの形式を学習</u>します。これを**指示文学習（Instruction tuning）**、あるいは**教師あり追加学習（Supervised Fine-tuning; SFT）**と呼ばれています。
+3. A/Bテストのような強化学習を行うことで、大衆/個人の好みに合うような応答が可能になったり、あるいは「爆弾の作り方」など危険な問いかけに対して、「答えられません」のようにガードを行うことができるようになります。これを**選好学習（Reinforcement Learning from Human Feedback; RLHF）**といいます。
+
+一般的にモデルの開発者は事前学習までベースモデル、そこからSFTやRLHFを行った、chat/sftモデルなどの2種類を公開することが多いです。ベースモデルはコーパスの確率分布を素直に捉えているので、LLM開発者にとっては再学習や自分好みのSFT等できるため、都合が良かったりします。しかしユーザにとっては、タスクの形式をあらかじめ学習したsftモデルやRLHF後のモデルのほうが、素直に指示に従ってくれるので、好まれます。
+
+試しに、
+
+```python
+# 1. モデル名
+# model_name = "meta-llama/Llama-2-7b-chat-hf"
+model_name = "meta-llama/Llama-2-7b-hf"
+```
+
+　のように、モデル名から"chat"を落として、baseモデルを実行してみてください。うまく従わなくなると思います。
+
+```python
+from transformers import pipeline, set_seed
+import torch
+
+set_seed(0)
+
+# 1. モデル名
+# model_name = "meta-llama/Llama-2-7b-chat-hf"
+model_name = "meta-llama/Llama-2-7b-hf" # ここを変更した
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）。ここをいま複数指定して、効果を試している。
+prompts = ["Please translate to Japanese: Tell me a story about a dragon.",
+           "Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese:",
+           "Please write a short sentence: Tell me a story about a dragon.",
+           "Please paraphrase this sentence: Tell me a story about a dragon.",
+          ]
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+outputs = pipe(prompts, max_length=100, do_sample=True)
+# print(output[0]["generated_text"])
+print(outputs)
+```
+
+
+
+
+
+#### chat template
+
+今までの話はプロンプトを直接モデルに入力していました。ベースモデルでは、これは適切なのですが、SFTモデルなどでは、チャット形式のテンプレートをプロンプトにさらに適用することで、SFTの性能をさらに引き出すことができます。
 
 
 
@@ -1186,6 +1388,14 @@ export HF_ASSETS_CACHE="/cl/home2/share/huggingface/assets"
 TODO: training
 
 
+
+
+
+```bash
+export HF_HOME="/mnt/dx2_data/huggingface"
+export HF_HUB_CACHE="/mnt/dx2_data/huggingface/hub"
+export HF_ASSETS_CACHE="/mnt/dx2_data/huggingface/assets"
+```
 
 
 
