@@ -160,7 +160,7 @@ Login successful.
 The current active token is: `test-for-uec`
 yusuke@mm-dhcp-124-238 llm-tutorial % 
 ```
-その後、https://huggingface.co/meta-llama/Llama-2-7b-chat-hfにアクセスして、申請許可をしておいてください。
+その後、[https://huggingface.co/meta-llama/Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) にアクセスして、申請許可をしておいてください。
 
 ### 本チュートリアルのオリジナルルール
 
