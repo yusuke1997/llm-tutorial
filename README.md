@@ -110,6 +110,7 @@ uv pip install streamlit
 uv pip install sacrebleu
 uv pip install bitsandbytes
 uv pip install accelerate
+uv pip install duckduckgo-search langchain-community
 ```
 
 念の為、GPUが使えることを以下のコマンドで確認してください。`True`になっていたらGPU環境で実行可能です。
@@ -1232,6 +1233,12 @@ print(prompts)
 
 ---
 
+### 補足：Chain-of-tought
+
+WIP
+
+---
+
 ## 2.1 Few-shot Prompting
 
 先程の例では翻訳がうまくいきませんでした。悔しいので少し粘ってみようと思います。子供の頃「ピザって10回言ってよ！」という遊びをやった記憶はありませんか？「ピザピザピザピザ...」「ここは？（肘を指す）」「ひざ」、といったように、ピザとひざが似ているため、何度も言うことで同じく似ている部位の膝と肘の間違えを誘発を狙っています。同様にLLMにもこのアプローチで正しく翻訳してもらえるよう、頑張ってもらいましょう。
@@ -1357,25 +1364,280 @@ outputs = pipe(prompts, max_length=100, do_sample=True)
 print(outputs)
 ```
 
+```python
+[
+  [{'generated_text': 'Please translate to Japanese: Tell me a story about a dragon.\nTell me a story about a dragon.\nPlease translate to Japanese: Can you tell me how to say this in Japanese?\nCan you tell me how to say this in Japanese?\nPlease translate to Japanese: Tell me the way to the station.\nPlease translate to Japanese: Tell me about the trip.\nPlease translate to Japanese: Tell me what happened.\nPlease translate to Japanese: Tell me'}],
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: 竜に話してください。\n\n### Context\n\n- 竜に話してください。\n- 話してください。\n\n### English\n\n- Tell me a story about a dragon.\n\n### Japanese\n\n- 竜に話'}], 
+  [{'generated_text': "Please write a short sentence: Tell me a story about a dragon.\nI'm afraid I can't help you.\nMy name is Aaron, I'm a writer and a software developer.\nI've written many short stories, but I've never been able to write a novel.\nI have a problem. I have too many ideas.\nI have a bunch of stories in my head that I want to write, but I don't know"}],
+  [{'generated_text': 'Please paraphrase this sentence: Tell me a story about a dragon.\nIn other words, tell me a story about a dragon and don’t quote any text.\nI’m not looking for a story about a dragon that is in text, I’m looking for a story that is a story about a dragon, not a quote from a story about a dragon.\nI’m looking for a story that is about a dragon that is'}]
+]
+```
 
+ね、指示に全然従わなくなったでしょ。そのため、基本的にchatやsft、あるいはbaseなどと書かれていないモデルを使うことが推論用途では一般的です。しかし、few-shot learningはベースモデルにも有効です：
+
+```python
+from transformers import pipeline, set_seed
+import torch
+
+set_seed(0)
+
+# 1. モデル名
+# model_name = "meta-llama/Llama-2-7b-chat-hf"
+model_name = "meta-llama/Llama-2-7b-hf" # ここを変更した
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+# 3. プロンプト（入力文）。ここをいま複数指定して、効果を試している。
+content = 'Tell me a story about a dragon.'
+prompts = [f"Please translate to Japanese: \nEnglish: {content}\nJapanese:",
+           f"Please translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: {content}\nJapanese:",
+           f"Please translate to Japanese: \nEnglish: How are you?\nJapanese: お元気ですか？\n\nPlease translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: {content}\nJapanese:",
+          ]
+print(prompts)
+
+# 4. ここでプロンプトをLLMに入力して、出力を得る。
+outputs = pipe(prompts, max_length=150, do_sample=True)
+# print(output[0]["generated_text"])
+print(outputs)
+```
+
+```python
+[
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: 竜に話してくれ。\n\nEnglish: Tell me a story about a turtle.\nJapanese: 亀に話してくれ。\n\nEnglish: Tell me a story about a cat.\nJapanese: 猫に話してくれ。\n\nEnglish: Tell me a story about a bird.\nJapanese: 鳥に話してくれ。\n\nEnglish: Tell me a story about a fish.\nJapanese: 魚に話してくれ。\n\nEnglish'}],
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: ドラゴンの物語をお話ししてください。\n\nPlease translate to Japanese: \nEnglish: Today is a beautiful day.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: The weather is beautiful today.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to'}], 
+  [{'generated_text': 'Please translate to Japanese: \nEnglish: How are you?\nJapanese: お元気ですか？\n\nPlease translate to Japanese: \nEnglish: Today is a beautifulday.\nJapanese: 今日はいい天気ですね。\n\nPlease translate to Japanese: \nEnglish: Tell me a story about a dragon.\nJapanese: ドラゴンの話を聞いてください。\n\nPlease translate to Japanese: \nEnglish: What is your favorite color?\nJapanese: 好きな色は？\n\nPlease translate to Japanese: \nEnglish: I like the color green.'}]
+]
+```
+
+1-shotでは、`ドラゴンの物語をお話ししてください。`という文言が含まれているため、翻訳のタスクを解く意図を理解していそうです。いずれにしても、ベースモデルは扱いずらいということがわかったと思うので、素直にSFTモデルを使いましょう。
 
 
 
 #### chat template
 
-今までの話はプロンプトを直接モデルに入力していました。ベースモデルでは、これは適切なのですが、SFTモデルなどでは、チャット形式のテンプレートをプロンプトにさらに適用することで、SFTの性能をさらに引き出すことができます。
+今までの話はプロンプトを直接モデルに入力していました。ベースモデルでは適切なのですが、SFTモデルなどではチャット形式のテンプレートをプロンプトにさらに適用することで、SFTの性能をさらに引き出すことができます。とりあえず、例から見ていきましょう。
+
+```python
+from transformers import pipeline, set_seed
+import torch
+
+set_seed(0)
+
+# 1. モデル名
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Please translate to Japanese: Tell me a story about a dragon."},
+    # {"role": "assistant", "content": "（ここにLLMの応答を必要に応じて書く）"},
+    # {"role": "user", "content": "（user/assistantは交互に）"},
+    # {"role": "assistant", "content": "（会話履歴をこのように入力する）"},
+    # {"role": "user", "content": "（few-shotも同様の形式で入れてあげると良い）"},
+    # ...
+ ]
+
+prompt = pipe.tokenizer.apply_chat_template(messages, tokenize=False)
+print(prompt)
+print('---')
+
+outputs = pipe(prompt, max_length=100, do_sample=True)
+print(outputs)
+```
+
+```python
+<s>[INST] <<SYS>>
+You are a helpful assistant.
+<</SYS>>
+
+Please translate to Japanese: Tell me a story about a dragon. [/INST]
+---
+[{'generated_text': '<s>[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nPlease translate to Japanese: Tell me a story about a dragon. [/INST]  Of course! Here is a story about a dragon in Japanese:\n\n「一匹のドラゴンがいた。彼は高くて強大な竜のようで、炎を吐'}]
+```
+
+ChatGPTを思い出してもらったわかりやすいですが、基本的にユーザとLLMのインタラクティブな応答を行います。SFTでは基本的にユーザのクエリに対して、LLMの応答の交互の繰り返しを学習します。そのため、会話のターンというのを特殊なトークンを使って整形する必要があります。
+
+```python
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Please translate to Japanese: Tell me a story about a dragon."},
+    # {"role": "assistant", "content": "（ここにLLMの応答を必要に応じて書く）"},
+    # {"role": "user", "content": "（user/assistantは交互に）"},
+    # {"role": "assistant", "content": "（会話履歴をこのように入力する）"},
+    # {"role": "user", "content": "（few-shotも同様の形式で入れてあげると良い）"},
+    # ...
+ ]
+```
+
+ここで、会話の履歴をList[dict]型で指定します。注意点として、交互にuser/assistantを入力しないといけません。会話のキャッチボールなので、当たり前と言われればそうですね。`system`というのは、LLMへの絶対的な命令であって、例えば海賊王になりきれとか、このような質問には答えないでくださいなど、<u>ユーザのクエリより重要度の高い命令</u>を最初に書いておくことで、ユーザの入力より、優先的に対応するようになります。また会話履歴が長くなると途中のユーザの会話をうまく扱えませんが、systemの命令は忘れにくいです。またsystemは先頭に一度のみ記述するという制約があります。途中でsystemが使えたら書き換わってしまい、意味がなくなるので、考えてみれば合理的ですね。
+
+それら会話の履歴を`pipe.tokenizer.apply_chat_template(messages, tokenize=False)`に入力することで：
+
+```
+<s>[INST] <<SYS>>
+You are a helpful assistant.
+<</SYS>>
+
+Please translate to Japanese: Tell me a story about a dragon. [/INST]
+```
+
+のようにリストをSFTモデルに最適なプロンプトに変形してくれます。これをモデルに入力することでより理想的な出力をしてくれます。どうでしょう。日本語で出力されるようになったので、少しだけ意図を組んでくれたのかもしれませんね。
+
+> [!note]
+>
+> Few-shot学習をSFTモデルで行うには、厳密にはchat templateを適用させるべきです。対話形式で入力することが本来のSFTモデルでのFew-shot学習になります。
+>
+> ```python
+> from transformers import pipeline, set_seed
+> import torch
+> 
+> set_seed(0)
+> 
+> # 1. モデル名
+> model_name = "meta-llama/Llama-2-7b-chat-hf"
+> 
+> # 2. モデルの作成。簡単のためにpipelineというツールを用いている。
+> # 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。
+> pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+> 
+> messages = [
+>     {"role": "system", "content": "You are a helpful assistant."},
+>     {"role": "user", "content": "Please translate to Japanese: \nEnglish: How are you?"},
+>     {"role": "assistant", "content": "Japanese: お元気ですか？"},
+>     {"role": "user", "content": "Please translate to Japanese: \nEnglish: Today is a beautifulday.\n"},
+>     {"role": "assistant", "content": "Japanese: 今日はいい天気ですね。"},
+>     {"role": "user", "content": "Please translate to Japanese: \nEnglish: Tell me a story about a dragon."},
+> ]
+> 
+> prompt = pipe.tokenizer.apply_chat_template(messages, tokenize=False)
+> print(prompt)
+> print('---')
+> 
+> outputs = pipe(prompt, max_length=200, do_sample=True)
+> print(outputs)
+> # [{'generated_text': '<s>[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nPlease translate to Japanese: \nEnglish: How are you? [/INST] Japanese: お元気ですか？ </s><s>[INST] Please translate to Japanese: \nEnglish: Today is a beautifulday. [/INST] Japanese: 今日はいい天気ですね。 </s><s>[INST] Please translate to Japanese: \nEnglish: Tell me a story about a dragon. [/INST] Japanese: ドラゴンの物語を聞いてみましょう。'}]
+> ```
+>
+> 翻訳結果は若干意味が違う気もしますが、少なくとも生成長について、余分なテキストの生成を抑制できました。また`Japanese:`をuser側にいれるかどうかは意見が別れますが、とりあえず、ユーザの入力とモデルの出力を想定した対話形式で事例を入力することが肝とということだけ覚えておいてください。
+
+> [!warning]
+>
+> 基本的に、`system`, `user`, `assistant`の3つを用いますが、gemmaなど、たまにsystemがないモデルが存在するので、注意してください。その場合は、先頭のuser要素の冒頭に追加してください。さらに、chat_templateについては最近追加されたものなので、対応していないモデルも存在します。エラーが出たら臨機応変に対応してください。最悪なくてもある程度動作します。
+>
+> また、pipelineを呼び出しただけでは自動的に適用してくれないので、現在のところ、手動で呼び出して上げる必要があります。こういう重要な要素に関して、HuggingFaceはうまく対応せずにpipelineでラップして隠してしまうため、結局自分で細かいところかかないとLLMの性能を引き出すこと出来ないんですよね...
+
+### 参考文献
+
+- https://huggingface.co/docs/transformers/main/chat_templating
+- https://community.openai.com/t/is-role-system-content-you-are-a-helpful-assistant-redundant-in-chat-api-calls/191229
+
+課題：ユーザからinputをもらうようにして、chat_templateを動的に変化させて、chatシステムを作ってみよう。while文とか使えば実装できそう。
+
+---
+
+## 2.2 Persona
+
+LLMに関西人になりきってもらいましょう。
+
+```python
+from transformers import pipeline, set_seed
+import torch
+
+set_seed(0)
+
+# 1. モデル名                                                                                                                                                         
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+
+# 2. モデルの作成。簡単のためにpipelineというツールを用いている。                                                                                                     
+# 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。                                                                                                              
+pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+
+messages=[
+    {"role": "system", "content": "You are a helpful Kansai-jin assistant."}, # ここに関西人という属性を記述する。
+    {"role": "user", "content": "Please translate to Japanese: Tell me a story about a dragon."},
+]
+
+prompt = pipe.tokenizer.apply_chat_template(messages, tokenize=False)
+print(prompt)
+print('---')
+
+outputs = pipe(prompt, max_length=200, do_sample=True)
+print(outputs)
+
+
+```
+
+```python
+[{'generated_text': '<s>[INST] <<SYS>>\nYou are a helpful Kansai-jin assistant.\n<</SYS>>\n\nPlease translate to Japanese: Tell me a story about a dragon. [/INST]  Oh, ho ho ho! *adjusts spectacles* A story about a dragon, you say? *crackles with excitement* Let me tell you a tale of a magnificent beast, straight from the heart of Kansai! *adjusts kimono*\n\nOnce upon a time, in the rolling hills of Kyoto, there lived a majestic dragon named Katsuro. Katsuro was no ordinary dragon, for he was said to possess the power of the gods. His scales shone like the brightest jewels, and his wings stretched wide as the sky itself.\n\nOne day, a young monk named Kouji stumbled upon Katsuro bask'}]
+```
+
+どうでしょう。Kyotoなど関西っぽい雰囲気になった気がしますが、うーん。誰か関西弁を喋らせてください。
+
+とりあえず、`system`などに振る舞ってほしい属性を記述したら、それっぽい反応をしてくれます。これを**ペルソナ（Persona）**といいます。例えば、性格パラメータみたいなのを記載しておいて、徐々に変化させるなど、バリエーション試せると思うので、遊んでみてください。Big-Five性格属性だったり、MBTIを入力したり、パラメータを頑張って、ゲームのキャラクタを作るなんて研究もありました。
+
+> [!note]
+>
+> そういえば、生成結果にプロンプトが含まれています。生成結果のみ取得したい場合はどうしましょう。シンプルにリストの操作によって、消してあげればよいです。
+>
+> 
+
+---
+
+## 2.3 検索を用いた応答生成（RAG）
+
+今まで、内容を自分で記述していました。あるいはファイルを読み込んで一文ずつ処理など考えられます。ではインタラクティブな処理を考えた時、今の情報が欲しい場合はありませんか？例えば「Hey Siri, 今日の天気を教えてよ」のような感じです。これをLLMで実現したいのですが、LLMは学習したデータの内容からしか答えられません。そういうとき、どうしましょう。
+
+困った時は人間の場合、つまり自分だったらどうするかという視点で考えるといいです。私ならweb検索をしてその結果を元に回答を生成します。同様に、LLMのプロンプトを頑張って、検索エンジンとつなげてあげましょう。つなげるツールはlangchainやllama_indexなどありますが、langchainがメジャーなようです。
+
+```python
+from langchain_community.tools import DuckDuckGoSearchResults
+
+search = DuckDuckGoSearchResults()
+print(search.invoke("NAIST"))
+
+# snippet: On Wednesday, October 2, 2024, Fall Welcome 2024 was held in the Millennium Hall. NAIST eagerly promotes admission of students whether from Japan or overseas with strong basic academic capabilities without being bound to a major field in university as well as researchers, engineers and others currently working actively in society who have clearly defined goals and aspirations for the future as ..., title: NAIST Fall Welcome (October 2, 2024)｜NARA Institute of Science and ..., link: https://www.naist.jp/en/news/2024/10/010924.html, snippet: 2023 NAIST Academic Award Encouragement Ceremony and Award Lecture will be held on February 24, 2024. EventReporting . 2023-12-05. The "FY2023 Mid-Term Student Research Evaluation & Fellowship meeting" was held at Division of Materials Science. ResearchAchievement . 2023-12-04 ..., title: Home | 奈良先端科学技術大学院大学 物質創成 ... - Naist, link: https://mswebs.naist.jp/en/, snippet: Events [June 2, 2025] NAIST will hold a BIO JUKU on September 8-9. Events [June 2, 2025] Applications are now open for Long term internship. News [June 2, 2025] NAIST Edge BIO "Generation of pluripotent stem cell-derived hearts in interspecies chimeric animals ..., title: NARA INSTITUTE of SCIENCE and TECHNOLOGY - NAIST, link: https://bsw3.naist.jp/eng/, snippet: NAIST is an elite, research-intensive institution for students focused on graduate studies in science and technology.If your goal is to pursue high-level research or enter the tech/biotech industry or academia, NAIST is an excellent choice.It is not a general-purpose university but a specialized powerhouse in its niche.. he Nara Institute of Science and Technology (NAIST) is a legitimate and ..., title: is NAIST Good? - Rebellion Research, link: https://www.rebellionresearch.com/is-naist-good
+```
+
+これはDuckDuckGoという検索エンジンのAPIを用いて、NAISTについて検索してきた結果です。この結果をプロンプトに含めれあげれば、リアルタイムの情報を取得できます。ここで、外部ツールのことをシンプルに**ツール（Tool）**といい、検索などを用いた結果をプロンプトに入力して、LLMの能力を引き上げる方法を**検索拡張生成（Retrieval-Augmented Generation; RAG）**といいます。
+
+> [!warning]
+>
+> あまりやりすぎると、以下のようなエラーがでて、検索できなくなります。しばらく時間置いたら復活します。外部ツールを使っているので、そちらのAPI許容量に依存することを頭の片隅に入れておいてください。
+>
+> ```bash
+> Traceback (most recent call last):
+>   File "/project/nlp-wmt2/llm-tutorial/test.py", line 5, in <module>
+>     search.invoke("Obama")
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/langchain_core/tools/base.py", line 510, in invoke
+>     return self.run(tool_input, **kwargs)
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/langchain_core/tools/base.py", line 771, in run
+>     raise error_to_raise
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/langchain_core/tools/base.py", line 740, in run
+>     response = context.run(self._run, *tool_args, **tool_kwargs)
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/langchain_community/tools/ddg_search/tool.py", line 112, in _run
+>     raw_results = self.api_wrapper.results(
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/langchain_community/utilities/duckduckgo_search.py", line 146, in results
+>     for r in self._ddgs_text(query, max_results=max_results)
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/langchain_community/utilities/duckduckgo_search.py", line 64, in _ddgs_text
+>     ddgs_gen = ddgs.text(
+>   File "/project/nlp-wmt2/llm-tutorial/.venv/lib/python3.10/site-packages/duckduckgo_search/duckduckgo_search.py", line 185, in text
+>     raise DuckDuckGoSearchException(err)
+> duckduckgo_search.exceptions.DuckDuckGoSearchException: https://lite.duckduckgo.com/lite/ 202 Ratelimit
+> ```
+
+> [!note]
+>
+> 2,3年前、確かこのようなツールのことをエージェント（Agent）と呼んでいた気がするのですが、最近では、エージェントの意味が変わってきたので、ツールと統一することにしました。
 
 
 
-
-
-
-
-
-
-
-
-
+- https://python.langchain.com/docs/integrations/tools/ddg/
+- 
 
 
 
@@ -1396,6 +1658,8 @@ export HF_HOME="/mnt/dx2_data/huggingface"
 export HF_HUB_CACHE="/mnt/dx2_data/huggingface/hub"
 export HF_ASSETS_CACHE="/mnt/dx2_data/huggingface/assets"
 ```
+
+
 
 
 
