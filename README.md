@@ -74,8 +74,6 @@ Type "help", "copyright", "credits" or "license" for more information.
 >
 > `source .venv/bin/activate`で仮想環境モードになっています。終了するときはシンプルにサーバとの接続を切るか、`deactivate`とコマンドを打つことで、先頭の括弧が消え、仮想環境から離れます。
 
-
-
 ### 参考資料
 
 - https://docs.astral.sh/uv/
@@ -159,6 +157,15 @@ Your token has been saved to /Users/yusuke/.cache/huggingface/token
 Login successful.
 The current active token is: `test-for-uec`
 yusuke@mm-dhcp-124-238 llm-tutorial % 
+```
+### 本チュートリアルのオリジナルルール
+
+今回、モデルを大量にロードするため、共有ディレクトリにまとめて、そこからロードしたいです。そのため、以下のコマンドを実行することで、モデルを一箇所にまとめます。
+
+```bash
+export HF_HOME="/mnt/dx2_data/huggingface"
+export HF_HUB_CACHE="/mnt/dx2_data/huggingface/hub"
+export HF_ASSETS_CACHE="/mnt/dx2_data/huggingface/assets"
 ```
 
 ---
