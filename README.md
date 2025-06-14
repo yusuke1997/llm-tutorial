@@ -160,6 +160,8 @@ Login successful.
 The current active token is: `test-for-uec`
 yusuke@mm-dhcp-124-238 llm-tutorial % 
 ```
+その後、https://huggingface.co/meta-llama/Llama-2-7b-chat-hfにアクセスして、申請許可をしておいてください。
+
 ### 本チュートリアルのオリジナルルール
 
 今回、モデルを大量にロードするため、共有ディレクトリにまとめて、そこからロードしたいです。そのため、以下のコマンドを実行することで、モデルを一箇所にまとめます。
@@ -1595,9 +1597,42 @@ print(outputs)
 
 > [!note]
 >
-> そういえば、生成結果にプロンプトが含まれています。生成結果のみ取得したい場合はどうしましょう。シンプルにリストの操作によって、消してあげればよいです。
+> そういえば、生成結果にプロンプトが含まれています。生成結果のみ取得したい場合はどうしましょう。シンプルにstrの操作によって、消してあげればよいです。
 >
+> ```python
+> rom transformers import pipeline, set_seed
+> import torch
 > 
+> set_seed(0)
+> 
+> # 1. モデル名                                                                                                                                                         
+> model_name = "meta-llama/Llama-2-7b-chat-hf"
+> 
+> # 2. モデルの作成。簡単のためにpipelineというツールを用いている。                                                                                                     
+> # 2.1 torch_dtype=torch.float16は16bitで読み込み。後述。                                                                                                              
+> pipe = pipeline("text-generation", model=model_name, torch_dtype=torch.float16)
+> 
+> messages=[
+>     {"role": "system", "content": "You are a helpful Kansai-jin assistant."},
+>     {"role": "user", "content": "Please translate to Japanese: Tell me a story about a dragon."},
+> ]
+> 
+> prompt = pipe.tokenizer.apply_chat_template(messages, tokenize=False)
+> print(prompt)
+> print('---')
+> 
+> outputs = pipe(prompt, max_length=200, do_sample=True)
+> # print(outputs)
+> print(outputs[0]['generated_text'][len(prompt):]) # ここを追記。promptの長さで区切っている。
+> ```
+>
+> ```
+>   Oh, ho ho ho! *adjusts spectacles* A story about a dragon, you say? *crackles with excitement* Let me tell you a tale of a magnificent beast, straight from the heart of Kansai! *adjusts kimono*
+> 
+> Once upon a time, in the rolling hills of Kyoto, there lived a majestic dragon named Katsuro. Katsuro was no ordinary dragon, for he was said to possess the power of the gods. His scales shone like the brightest jewels, and his wings stretched wide as the sky itself.
+> 
+> One day, a young monk named Kouji stumbled upon Katsuro bask
+> ```
 
 ---
 
