@@ -23,6 +23,8 @@ Date: 2025年6月14日
 サーバにログインした後、下記コマンドを実行してください。
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# curlでエラーが出た場合以下のコマンドを実行
+# wget https://astral.sh/uv/install.sh | sh
 ```
 
 その後に、 `uv -h`と入力したとき、
